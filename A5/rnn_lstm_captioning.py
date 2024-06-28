@@ -112,7 +112,13 @@ def rnn_step_forward(x, prev_h, Wx, Wh, b):
     # and cache variables respectively.
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    xWx = x.mm(Wx)
+    prev_hWh = prev_h.mm(Wh)+b
+    before_tanh = xWx + prev_hWh
+    next_h = torch.tanh(before_tanh)
+    cache = (before_tanh, prev_h, Wh, Wx, x)
+
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -142,7 +148,16 @@ def rnn_step_backward(dnext_h, cache):
     # terms of the output value from tanh.
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+
+    before_tanh, prev_h, Wh, Wx, x = cache
+
+    dbefore_tanh = (1 - torch.tanh(before_tanh)*torch.tanh(before_tanh)) * dnext_h
+    db = dbefore_tanh.sum(dim=0)
+    dWh = prev_h.t().mm(dbefore_tanh)
+    dprev_h = dbefore_tanh.mm(Wh.t())
+    dx = dbefore_tanh.mm(Wx.t())
+    dWx = x.t().mm(dbefore_tanh)
+
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -174,7 +189,17 @@ def rnn_forward(x, h0, Wx, Wh, b):
     # above. You can use a for loop to help compute the forward pass.
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    N, T, D = x.shape
+    _, H = h0.shape
+    h = torch.zeros(N,T,H,dtype=torch.float64,device=torch.device("cuda"))
+    prev_h = h0
+    cache = []
+    for t in range(T):
+      prev_h, local_cache = rnn_step_forward(x[:,t], prev_h, Wx, Wh, b)
+      h[:,t] = prev_h
+      cache.append(local_cache)
+
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -207,7 +232,24 @@ def rnn_backward(dh, cache):
     # defined above. You can use a for loop to help compute the backward pass.
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    N, T, H = dh.shape
+    D = cache[-1][-1].shape[1]
+    db = torch.zeros(H, dtype=torch.float64,device=torch.device("cuda"))
+    dWh = torch.zeros(H,H, dtype=torch.float64,device=torch.device("cuda"))
+    dWx = torch.zeros(D,H, dtype=torch.float64,device=torch.device("cuda"))
+    dh0 = torch.zeros(N,H, dtype=torch.float64,device=torch.device("cuda"))
+    dx = torch.zeros(N,T,D, dtype=torch.float64,device=torch.device("cuda"))
+
+    for t in range(T)[::-1]:
+      total_dout = dprev_h + dh[:,t]
+      local_dx, dprev_h, local_dWx, local_dWh, local_db = rnn_step_backward(total_dout, cache[t])
+      db += local_db
+      dWh += local_dWh
+      dWx += local_dWx
+      dx[:,t] = local_dx
+    dh0= dprev_h
+
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -300,7 +342,9 @@ class WordEmbedding(nn.Module):
         # TODO: Implement the forward pass for word embeddings.
         ######################################################################
         # Replace "pass" statement with your code
-        pass
+        
+        out = self.W_embed[x]
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -345,7 +389,9 @@ def temporal_softmax_loss(x, y, ignore_index=None):
     # all timesteps and *averaging* across the minibatch.
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    loss = torch.nn.functional.cross_entropy(x.reshape(x.shape[0],-1),y.reshape(-1),ignore_index=ignore_index,reduction ='sum')/x.shape[0]
+
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -416,7 +462,19 @@ class CaptioningRNN(nn.Module):
         # (2) feature projection (from CNN pooled feature to h0)
         ######################################################################
         # Replace "pass" statement with your code
-        pass
+        
+        self.encoder = ImageEncoder(pooling=True, verbose=False)
+        self.linear1 = nn.Linear(1280,hidden_dim)
+        self.emb = WordEmbedding(vocab_size, wordvec_dim)
+        if cell_type == 'rnn':
+          self.RNN = RNN(wordvec_dim,hidden_dim)
+        if cell_type == 'lstm':
+          self.LSTM = LSTM(wordvec_dim,hidden_dim)
+        if cell_type == 'attn':
+          pass
+        self.linear2 =  nn.Linear(hidden_dim, vocab_size)
+        
+
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################
@@ -467,7 +525,26 @@ class CaptioningRNN(nn.Module):
         # Do not worry about regularizing the weights or their gradients!
         ######################################################################
         # Replace "pass" statement with your code
-        pass
+        
+        if self.cell_type == 'rnn':
+          images = self.encoder(images)
+          images = self.linear1(images)
+          captions_in = self.emb(captions_in)
+          h_states = self.RNN(captions_in, images)
+        elif self.cell_type == 'lstm':
+          images = self.encoder(images)
+          images = self.linear1(images)
+          captions_in = self.emb(captions_in)
+          h_states = self.LSTM(captions_in, images)
+        elif self.cell_type == 'attn':
+          images = self.encoder(images)
+          images = self.conv1(images)
+          captions_in = self.emb(captions_in)
+          
+
+        h_states = self.linear2(h_states)
+        loss = temporal_softmax_loss(h_states, captions_out, ignore_index=self._null)
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -529,7 +606,23 @@ class CaptioningRNN(nn.Module):
         # would both be A.mean(dim=(2, 3)).
         #######################################################################
         # Replace "pass" statement with your code
-        pass
+        if self.cell_type == "rnn":
+          images = self.encoder(images)
+          prev_h = self.linear1(images)
+
+        # mask = [self._start for x in range(N)]
+        mask = torch.full((N,),self._start)
+        x = self.emb(mask)
+        for t in range(max_length):
+          if self.cell_type == 'rnn':
+            prev_h = self.RNN.step_forward(x, prev_h)
+        
+          scores = self.linear2(prev_h)
+          _, idx = scores.max(dim=1)
+          x = self.emb(idx)
+          captions[:,t] = idx
+
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -590,7 +683,26 @@ class LSTM(nn.Module):
         ######################################################################
         next_h, next_c = None, None
         # Replace "pass" statement with your code
-        pass
+        
+        H = prev_h.shape[1]
+
+        xWx = x.mm(self.Wx)
+        hWh = prev_h.mm(self.Wh)
+        a = xWx + hWh + self.b
+
+        i = a[:, :H]
+        f = a[:, H:2*H]
+        o = a[:, 2*H:3*H]
+        g = a[:, 3*H:4*H]
+
+        i = torch.sigmoid(i)
+        f = torch.sigmoid(f)
+        o = torch.sigmoid(o)
+        g = torch.tanh(g)
+
+        next_c = f*prev_c + i*g
+        next_h = o*torch.tanh(next_c)
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -624,7 +736,16 @@ class LSTM(nn.Module):
         ######################################################################
         hn = None
         # Replace "pass" statement with your code
-        pass
+        
+        N, T, D = x.shape
+        _ , H = h0.shape
+        hn = torch.zeros(N,T,H)
+        prev_h = h0
+        prev_c = c0
+        for t in range(T):
+          prev_h, prev_c = self.step_forward(self.Wx, self.Wh, self.b)
+          hn[:,t] = prev_h
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -655,7 +776,9 @@ def dot_product_attention(prev_h, A):
     # functions. HINT: Make sure you reshape attn_weights back to (N, 4, 4)! #
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    
+
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
