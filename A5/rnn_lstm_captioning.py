@@ -192,7 +192,7 @@ def rnn_forward(x, h0, Wx, Wh, b):
     
     N, T, D = x.shape
     _, H = h0.shape
-    h = torch.zeros(N,T,H,dtype=torch.float64,device=torch.device("cuda"))
+    h = torch.zeros(N,T,H,dtype=x.dtype,device=x.device)
     prev_h = h0
     cache = []
     for t in range(T):
@@ -235,11 +235,11 @@ def rnn_backward(dh, cache):
     
     N, T, H = dh.shape
     D = cache[-1][-1].shape[1]
-    db = torch.zeros(H, dtype=torch.float64,device=torch.device("cuda"))
-    dWh = torch.zeros(H,H, dtype=torch.float64,device=torch.device("cuda"))
-    dWx = torch.zeros(D,H, dtype=torch.float64,device=torch.device("cuda"))
-    dh0 = torch.zeros(N,H, dtype=torch.float64,device=torch.device("cuda"))
-    dx = torch.zeros(N,T,D, dtype=torch.float64,device=torch.device("cuda"))
+    db = torch.zeros(H, dtype=dh.dtype,device=dh.device)
+    dWh = torch.zeros(H,H, dtype=dh.dtype,device=dh.device)
+    dWx = torch.zeros(D,H, dtype=dh.dtype,device=dh.device)
+    dh0 = torch.zeros(N,H, dtype=dh.dtype,device=dh.device)
+    dx = torch.zeros(N,T,D, dtype=dh.dtype,device=dh.device)
 
     for t in range(T)[::-1]:
       total_dout = dprev_h + dh[:,t]
@@ -390,7 +390,7 @@ def temporal_softmax_loss(x, y, ignore_index=None):
     ##########################################################################
     # Replace "pass" statement with your code
     
-    loss = torch.nn.functional.cross_entropy(x.reshape(x.shape[0],-1),y.reshape(-1),ignore_index=ignore_index,reduction ='sum')/x.shape[0]
+    loss = torch.nn.functional.cross_entropy(x.permute(0,2,1), y, ignore_index=ignore_index,reduction ='sum')/x.shape[0]
 
     ##########################################################################
     #                             END OF YOUR CODE                           #
@@ -463,15 +463,19 @@ class CaptioningRNN(nn.Module):
         ######################################################################
         # Replace "pass" statement with your code
         
-        self.encoder = ImageEncoder(pooling=True, verbose=False)
-        self.linear1 = nn.Linear(1280,hidden_dim)
+        self.encoder = ImageEncoder(verbose=False)
         self.emb = WordEmbedding(vocab_size, wordvec_dim)
+
         if cell_type == 'rnn':
-          self.RNN = RNN(wordvec_dim,hidden_dim)
-        if cell_type == 'lstm':
-          self.LSTM = LSTM(wordvec_dim,hidden_dim)
-        if cell_type == 'attn':
-          pass
+          self.linear1 = nn.Linear(input_dim*16, hidden_dim)
+          self.RNN = RNN(wordvec_dim, hidden_dim)
+        elif cell_type == 'lstm':
+          self.linear1 = nn.Linear(input_dim*16, hidden_dim)
+          self.LSTM = LSTM(wordvec_dim, hidden_dim)
+        elif cell_type == 'attn':
+          self.linear1 = nn.Linear(input_dim, hidden_dim)
+          self.attn = AttentionLSTM(wordvec_dim, hidden_dim)
+
         self.linear2 =  nn.Linear(hidden_dim, vocab_size)
         
 
@@ -526,24 +530,21 @@ class CaptioningRNN(nn.Module):
         ######################################################################
         # Replace "pass" statement with your code
         
-        if self.cell_type == 'rnn':
-          images = self.encoder(images)
-          images = self.linear1(images)
-          captions_in = self.emb(captions_in)
-          h_states = self.RNN(captions_in, images)
-        elif self.cell_type == 'lstm':
-          images = self.encoder(images)
-          images = self.linear1(images)
-          captions_in = self.emb(captions_in)
-          h_states = self.LSTM(captions_in, images)
-        elif self.cell_type == 'attn':
-          images = self.encoder(images)
-          images = self.conv1(images)
-          captions_in = self.emb(captions_in)
-          
+        images = self.encoder(images)                        # (N, D, 4, 4)
+        captions_in = self.emb(captions_in)                  # (N, T, W)
 
-        h_states = self.linear2(h_states)
-        loss = temporal_softmax_loss(h_states, captions_out, ignore_index=self._null)
+        if self.cell_type == 'rnn':
+          images = self.linear1(images.reshape(images.shape[0],-1))     # (N, H)
+          hT = self.RNN(captions_in, images)                            # (N, T, H)
+        elif self.cell_type == 'lstm':
+          images = self.linear1(images.reshape(images.shape[0],-1))
+          hT = self.LSTM(captions_in, images)
+        elif self.cell_type == 'attn':
+          images = self.linear1(images.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)    # (N, H, 4, 4)
+          hT = self.attn(captions_in, images)                           # (N, T, H)
+          
+        scores = self.linear2(hT)                                       # (N, T, V)
+        loss = temporal_softmax_loss(scores, captions_out, ignore_index=self.ignore_index)
 
         ######################################################################
         #                           END OF YOUR CODE                         #
@@ -606,22 +607,36 @@ class CaptioningRNN(nn.Module):
         # would both be A.mean(dim=(2, 3)).
         #######################################################################
         # Replace "pass" statement with your code
+
+        images = self.encoder(images)
         if self.cell_type == "rnn":
-          images = self.encoder(images)
-          prev_h = self.linear1(images)
+          h = self.linear1(images.reshape(images.shape[0],-1))
 
-        # mask = [self._start for x in range(N)]
-        mask = torch.full((N,),self._start)
-        x = self.emb(mask)
+        elif self.cell_type == 'lstm':
+          h = self.linear1(images.reshape(images.shape[0],-1))
+          c = torch.zeros_like(images)
+        elif self.cell_type == 'attn':
+          A = self.linear1(images.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+          h = images.mean(dim=(2, 3))
+          c = images.mean(dim=(2, 3))
+
+        # words = [self._start for x in range(N)]
+        words = torch.full((N,1),self._start)
+
         for t in range(max_length):
+          word = self.emb(words).reshape(N,-1)
           if self.cell_type == 'rnn':
-            prev_h = self.RNN.step_forward(x, prev_h)
+            h = self.RNN.step_forward(word, h)
+          elif self.cell_type == 'lstm':
+            h, c = self.LSTM.step_forward(word, h, c)
+          elif self.cell_type == 'attn':
+            attn, attn_weights_all[:, t, :, :] = dot_product_attention(h, A)
+            h, c = self.attn.step_forward(word, h, c, attn)
         
-          scores = self.linear2(prev_h)
+          scores = self.linear2(h)
           _, idx = scores.max(dim=1)
-          x = self.emb(idx)
           captions[:,t] = idx
-
+          
 
         ######################################################################
         #                           END OF YOUR CODE                         #
@@ -690,15 +705,15 @@ class LSTM(nn.Module):
         hWh = prev_h.mm(self.Wh)
         a = xWx + hWh + self.b
 
-        i = a[:, :H]
-        f = a[:, H:2*H]
-        o = a[:, 2*H:3*H]
-        g = a[:, 3*H:4*H]
+        ai = a[:, :H]
+        af = a[:, H:2*H]
+        ao = a[:, 2*H:3*H]
+        ag = a[:, 3*H:4*H]
 
-        i = torch.sigmoid(i)
-        f = torch.sigmoid(f)
-        o = torch.sigmoid(o)
-        g = torch.tanh(g)
+        i = torch.sigmoid(ai)
+        f = torch.sigmoid(af)
+        o = torch.sigmoid(ao)
+        g = torch.tanh(ag)
 
         next_c = f*prev_c + i*g
         next_h = o*torch.tanh(next_c)
@@ -739,11 +754,11 @@ class LSTM(nn.Module):
         
         N, T, D = x.shape
         _ , H = h0.shape
-        hn = torch.zeros(N,T,H)
+        hn = torch.zeros(N,T,H, dtype=x.dtype,device=x.device)
         prev_h = h0
         prev_c = c0
         for t in range(T):
-          prev_h, prev_c = self.step_forward(self.Wx, self.Wh, self.b)
+          prev_h, prev_c = self.step_forward(x[:,t], prev_h, prev_c)
           hn[:,t] = prev_h
 
         ######################################################################
@@ -777,7 +792,13 @@ def dot_product_attention(prev_h, A):
     ##########################################################################
     # Replace "pass" statement with your code
     
-    
+    A = A.reshape(N, H, -1)                                                    # (N, H, 16)
+    prev_h = prev_h.reshape(N, H, 1).permute(0, 2, 1)                          # (N, 1, H)
+    attn_weights = nn.functional.softmax(prev_h.bmm(A) / (H ** 0.5), dim=2)    # (N, 1, 16)
+    attn = A.bmm(attn_weights.reshape(N, D_a ** 2, 1))                         # (N, H, 1)
+    attn = attn.reshape(N, H)                                                  # (N, H)
+    attn_weights = attn_weights.reshape(N, D_a, D_a)                           # (N, 4, 4)
+
 
     ##########################################################################
     #                             END OF YOUR CODE                           #
@@ -842,7 +863,27 @@ class AttentionLSTM(nn.Module):
         #######################################################################
         next_h, next_c = None, None
         # Replace "pass" statement with your code
-        pass
+        
+        H = prev_h.shape[1]
+
+        xWx = x.mm(self.Wx)
+        hWh = prev_h.mm(self.Wh)
+        attnWattn = attn.mm(self.Wattn) 
+        a = xWx + hWh + attnWattn + self.b
+
+        ai = a[:, :H]
+        af = a[:, H:2*H]
+        ao = a[:, 2*H:3*H]
+        ag = a[:, 3*H:4*H]
+
+        i = torch.sigmoid(ai)
+        f = torch.sigmoid(af)
+        o = torch.sigmoid(ao)
+        g = torch.tanh(ag)
+
+        next_c = f*prev_c + i*g
+        next_h = o*torch.tanh(next_c)
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -885,7 +926,19 @@ class AttentionLSTM(nn.Module):
         ######################################################################
         hn = None
         # Replace "pass" statement with your code
-        pass
+        
+        N, T, D = x.shape
+        _ , H = h0.shape
+        hn = torch.zeros(N,T,H, dtype=x.dtype,device=x.device)
+        prev_h = h0
+        prev_c = c0
+        for t in range(T):
+          attn, _ = dot_product_attention(h0, A)
+          prev_h, prev_c = self.step_forward(x[:,t], prev_h, prev_c)
+          hn[:,t] = prev_h
+
+        return hn
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
