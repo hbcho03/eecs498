@@ -85,9 +85,10 @@ class DetectorBackboneWithFPN(nn.Module):
 
         # Replace "pass" statement with your code
         
-        self.fpn_params['l3'] = nn.Conv2d(dummy_out_shapes[0][1][1], self.out_channels, 1, 1, 0)
-        self.fpn_params['l4'] = nn.Conv2d(dummy_out_shapes[1][1][1], self.out_channels, 1, 1, 0)
-        self.fpn_params['l5'] = nn.Conv2d(dummy_out_shapes[2][1][1], self.out_channels, 1, 1, 0)
+        self.fpn_params['l3'] = nn.Conv2d(dummy_out_shapes[0][1][1], self.out_channels, 1,1,0)
+        self.fpn_params['l4'] = nn.Conv2d(dummy_out_shapes[1][1][1], self.out_channels, 1,1,0)
+        self.fpn_params['l5'] = nn.Conv2d(dummy_out_shapes[2][1][1], self.out_channels, 1,1,0)
+
         self.fpn_params['p3'] = nn.Conv2d(self.out_channels,self.out_channels,3,1,1)
         self.fpn_params['p4'] = nn.Conv2d(self.out_channels,self.out_channels,3,1,1)
         self.fpn_params['p5'] = nn.Conv2d(self.out_channels,self.out_channels,3,1,1)
@@ -118,14 +119,15 @@ class DetectorBackboneWithFPN(nn.Module):
         ######################################################################
 
         # Replace "pass" statement with your code
+
         lat3 = self.fpn_params['l3'](backbone_feats['c3'])
         lat4 = self.fpn_params['l4'](backbone_feats['c4'])
         lat5 = self.fpn_params['l5'](backbone_feats['c5'])
 
-        lat5_resize = nn.functional.interpolate(lat5, size=(lat4.shape[2],lat4.shape[3]), mode='nearest')
-        lat4 = lat4 + lat5_resize
-        lat4_resize = nn.functional.interpolate(lat4, size=(lat3.shape[2],lat3.shape[3]), mode='nearest')
-        lat3 = lat3 + lat4_resize
+        lat5_up = F.interpolate(lat5, size=(lat4.shape[2],lat4.shape[3]))
+        lat4 = lat4 + lat5_up
+        lat4_up = F.interpolate(lat4, size=(lat3.shape[2],lat3.shape[3]))
+        lat3 = lat3 + lat4_up
 
         fpn_feats['p3'] = self.fpn_params['p3'](lat3)
         fpn_feats['p4'] = self.fpn_params['p4'](lat4)
@@ -179,11 +181,10 @@ def get_fpn_location_coords(
 
         x = level_stride*torch.arange(0.5,feat_shape[3]+0.5,step=1,dtype=dtype,device=device)
         y = level_stride*torch.arange(0.5,feat_shape[2]+0.5,step=1,dtype=dtype,device=device)
-        (xGrid, yGrid) = torch.meshgrid(x,y,indexing='xy')
-        xGrid = xGrid.unsqueeze(dim=-1)
-        yGrid = yGrid.unsqueeze(dim=-1)
-        location_coords[level_name] = torch.cat((xGrid,yGrid),dim=2).view(feat_shape[3]*feat_shape[2],2)
-
+        grid_x, grid_y = torch.meshgrid(x,y,indexing='ij')
+        grid_x = grid_x.reshape(-1).unsqueeze(dim=-1)
+        grid_y = grid_y.reshape(-1).unsqueeze(dim=-1)
+        location_coords[level_name] = torch.cat((grid_x,grid_y),dim=1)
 
         ######################################################################
         #                             END OF YOUR CODE                       #
@@ -224,30 +225,36 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     #############################################################################
     # Replace "pass" statement with your code
 
-    def get_iou_mat(selected_box, boxes): 
-      N, _ = boxes.shape
-      x1s = torch.max(selected_box[0], boxes[:, 0])
-      y1s = torch.max(selected_box[1], boxes[:, 1])
-      x2s = torch.min(selected_box[2], boxes[:, 2])
-      y2s = torch.min(selected_box[3], boxes[:, 3])
+    x1 = boxes[:,0]
+    y1 = boxes[:,1]
+    x2 = boxes[:,2]
+    y2 = boxes[:,3]
+    areas = (x2-x1)*(y2-y1)
+    _, order = scores.sort(0, descending=True)
 
-      intersections_mat = torch.clamp(x2s-x1s, 0) * torch.clamp(y2s-y1s, 0) 
-      areas_1 = ((selected_box[2] - selected_box[0])*(selected_box[3] - selected_box[1]))
-      areas_2 = ((boxes[:, 2] - boxes[:, 0])*(boxes[:, 3] - boxes[:, 1]))
-      ious = intersections_mat/(areas_1+areas_2 - intersections_mat)
+    keep = []
+    while order.numel() > 0:
+        if order.numel() == 1:
+            i = order.item()
+            keep.append(i)
+            break
+        else:
+            i = order[0].item()
+            keep.append(i)
 
-      return ious
+        xx1 = x1[order[1:]].clamp(min=x1[i])
+        yy1 = y1[order[1:]].clamp(min=y1[i])
+        xx2 = x2[order[1:]].clamp(max=x2[i])
+        yy2 = y2[order[1:]].clamp(max=y2[i])
+        inter = (xx2-xx1).clamp(min=0) * (yy2-yy1).clamp(min=0)
 
-    idx_to_search = torch.argsort(scores, descending=True)
-    keep = [] 
-    while(len(idx_to_search) >0): 
-      keep.append(idx_to_search[0])
-      best_box = boxes[idx_to_search[0]]
-      remaining_boxes = boxes[idx_to_search]
-      ious = get_iou_mat(best_box, remaining_boxes)
-      new_idxs_mask = ious <= iou_threshold
-      idx_to_search = idx_to_search[new_idxs_mask]
-    keep = torch.tensor(keep)
+        iou = inter / (areas[i]+areas[order[1:]]-inter)
+        idx = (iou <= iou_threshold).nonzero().squeeze()
+        if idx.numel() == 0:
+            break
+        order = order[idx+1]
+    
+    keep = torch.tensor(keep, dtype=torch.long)   
 
     #############################################################################
     #                              END OF YOUR CODE                             #

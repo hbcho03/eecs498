@@ -61,23 +61,24 @@ class FCOSPredictionNetwork(nn.Module):
         stem_box = []
         # Replace "pass" statement with your code
 
-        inputSize = in_channels
-        for outputSize in stem_channels:
-          # cls
-          convLayer1 = nn.Conv2d(inputSize, outputSize,3,1,1)
-          ReLU1 = nn.ReLU()
-          torch.nn.init.normal_(convLayer1.weight,0,0.01)
-          torch.nn.init.constant_(convLayer1.bias, 0)
-          stem_cls.append(convLayer1)
-          stem_cls.append(ReLU1)
-          # box
-          convLayer2 = nn.Conv2d(inputSize, outputSize,3,1,1)
-          ReLU2 = nn.ReLU()
-          torch.nn.init.normal_(convLayer2.weight,0,0.01)
-          torch.nn.init.constant_(convLayer2.bias,0)
-          stem_box.append(convLayer2)
-          stem_box.append(ReLU2)
-          inputSize = outputSize
+        input_dim = in_channels
+        for output_dim in stem_channels:
+          
+          conv1 = nn.Conv2d(input_dim, output_dim,3,1,1)
+          relu1 = nn.ReLU()
+          torch.nn.init.normal_(conv1.weight,0,0.01)
+          torch.nn.init.constant_(conv1.bias, 0)
+          stem_cls.append(conv1)
+          stem_cls.append(relu1)
+          
+          conv2 = nn.Conv2d(input_dim, output_dim,3,1,1)
+          relu2 = nn.ReLU()
+          torch.nn.init.normal_(conv2.weight,0,0.01)
+          torch.nn.init.constant_(conv2.bias,0)
+          stem_box.append(conv2)
+          stem_box.append(relu2)
+          
+          input_dim = output_dim
           
 
         # Wrap the layers defined by student into a `nn.Sequential` module:
@@ -169,17 +170,18 @@ class FCOSPredictionNetwork(nn.Module):
         
         for level, feature in feats_per_fpn_level.items():
 
-          class_logits[level] = self.pred_cls(self.stem_cls(feature))
+          stem_cls_out = self.stem_cls(feature)
+          class_logits[level] = self.pred_cls(stem_cls_out)
           B = class_logits[level].shape[0]
-          N = class_logits[level].shape[1]
-          class_logits[level] = class_logits[level].view(B, N, -1).permute(0, 2, 1)
+          C = class_logits[level].shape[1]
+          class_logits[level] = class_logits[level].reshape(B, C, -1).permute(0, 2, 1)
 
-          stemOutput = self.stem_box(feature)
-          boxreg_deltas[level] = self.pred_box(stemOutput)
-          boxreg_deltas[level] = boxreg_deltas[level].view(B, 4, -1).permute(0, 2, 1)
+          stem_box_out = self.stem_box(feature)
+          boxreg_deltas[level] = self.pred_box(stem_box_out)
+          boxreg_deltas[level] = boxreg_deltas[level].reshape(B, 4, -1).permute(0, 2, 1)
 
-          centerness_logits[level] = self.pred_ctr(stemOutput)
-          centerness_logits[level] = centerness_logits[level].view(B, 1, -1).permute(0, 2, 1)
+          centerness_logits[level] = self.pred_ctr(stem_box_out)
+          centerness_logits[level] = centerness_logits[level].reshape(B, 1, -1).permute(0, 2, 1)
 
 
         ######################################################################
@@ -235,21 +237,21 @@ def fcos_match_locations_to_gt(
         # Get stride for this FPN level.
         stride = strides_per_fpn_level[level_name]
 
-        x, y = centers.unsqueeze(dim=2).unbind(dim=1)
-        x0, y0, x1, y1 = gt_boxes[:, :4].unsqueeze(dim=0).unbind(dim=2)
-        pairwise_dist = torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
+        x, y = centers.unsqueeze(dim=2).unbind(dim=1)                            # (H*W, 1)
+        x0, y0, x1, y1 = gt_boxes[:, :4].unsqueeze(dim=0).unbind(dim=2)          # (1, M)
+        pairwise_dist = torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)     # (H*W, M, 4)
 
         # Pairwise distance between every feature center and GT box edges:
         # shape: (num_gt_boxes, num_centers_this_level, 4)
-        pairwise_dist = pairwise_dist.permute(1, 0, 2)
+        pairwise_dist = pairwise_dist.permute(1, 0, 2)                           # (M, H*W, 4)
 
         # The original FCOS anchor matching rule: anchor point must be inside GT.
-        match_matrix = pairwise_dist.min(dim=2).values > 0
+        match_matrix = pairwise_dist.min(dim=2).values > 0                       # (M, H*W)
 
         # Multilevel anchor matching in FCOS: each anchor is only responsible
         # for certain scale range.
         # Decide upper and lower bounds of limiting targets.
-        pairwise_dist = pairwise_dist.max(dim=2).values
+        pairwise_dist = pairwise_dist.max(dim=2).values                          # (M, H*W)
 
         lower_bound = stride * 4 if level_name != "p3" else 0
         upper_bound = stride * 8 if level_name != "p5" else float("inf")
@@ -268,11 +270,11 @@ def fcos_match_locations_to_gt(
 
         # Find matched ground-truth instance per anchor (un-matched = -1).
         match_quality, matched_idxs = match_matrix.max(dim=0)
-        matched_idxs[match_quality < 1e-5] = -1
+        matched_idxs[match_quality < 1e-5] = -1                                  # (H*W,)
 
         # Anchors with label 0 are treated as background.
         matched_boxes_this_level = gt_boxes[matched_idxs.clip(min=0)]
-        matched_boxes_this_level[matched_idxs < 0, :] = -1
+        matched_boxes_this_level[matched_idxs < 0, :] = -1                       # (H*W, 5)
 
         matched_gt_boxes[level_name] = matched_boxes_this_level
 
@@ -411,7 +413,7 @@ def fcos_make_centerness_targets(deltas: torch.Tensor):
     centerness = torch.empty(deltas.shape[0]).to(device=deltas.device, dtype=deltas.dtype)
     centerness = torch.sqrt((torch.min(deltas[:,0],deltas[:,2])*torch.min(deltas[:,1],deltas[:,3]))\
     /(torch.max(deltas[:,0],deltas[:,2])*torch.max(deltas[:,1],deltas[:,3])))
-    centerness[deltas[:,:4].sum(dim=1)==-4]=-1
+    centerness[deltas[:,:4].sum(dim=1) == -4] =- 1
 
 
     ##########################################################################
@@ -507,7 +509,7 @@ class FCOS(nn.Module):
         # Replace "pass" statement with your code
         
         fpn_shape = {"p3":fpn_info["p3"].shape, "p4":fpn_info["p4"].shape, "p5":fpn_info["p5"].shape}
-        locations_per_fpn_level = get_fpn_location_coords(fpn_shape,self.backbone.fpn_strides, device=images.device)
+        locations_per_fpn_level = get_fpn_location_coords(fpn_shape, self.backbone.fpn_strides, device=images.device)
 
         ######################################################################
         #                           END OF YOUR CODE                         #
@@ -586,26 +588,21 @@ class FCOS(nn.Module):
         gt_classes = matched_gt_boxes[:,:,4].clone()
         bg_mask = gt_classes==-1
         gt_classes[bg_mask] = 0
-        gt_classes_one_hot = torch.nn.functional.one_hot(gt_classes.long(),self.num_classes)
-        gt_classes_one_hot = gt_classes_one_hot.to(gt_boxes.dtype)
+        gt_classes_one_hot = torch.nn.functional.one_hot(gt_classes.int(), self.num_classes).to(gt_boxes.dtype)
         gt_classes_one_hot[bg_mask] = 0
-        loss_cls = sigmoid_focal_loss(inputs=pred_cls_logits, targets=gt_classes_one_hot)
+        loss_cls = sigmoid_focal_loss(pred_cls_logits, gt_classes_one_hot)
 
 
         pred_boxreg_deltas = pred_boxreg_deltas.reshape(-1,4)
         matched_gt_deltas = matched_gt_deltas.reshape(-1,4)
-        # Find the background images
-        matched_boxes = matched_gt_boxes[:,:,4].clone().reshape(-1)
-        background_mask = matched_boxes==-1        
-        #Calculate the box loss
+
         loss_box = 0.25 * F.l1_loss(pred_boxreg_deltas, matched_gt_deltas, reduction="none")
-        # Do not count the loss of background images
-        loss_box[background_mask] = 0
+        loss_box[matched_gt_deltas < 0] *= 0.0
 
         pred_ctr_logits = pred_ctr_logits.view(-1)
         gt_centerness = fcos_make_centerness_targets(matched_gt_deltas)
         loss_ctr = F.binary_cross_entropy_with_logits(pred_ctr_logits, gt_centerness, reduction="none")
-        loss_ctr[gt_centerness<=0] = 0
+        loss_ctr[gt_centerness < 0] *= 0
 
         ######################################################################
         #                            END OF YOUR CODE                        #
@@ -703,34 +700,30 @@ class FCOS(nn.Module):
             # Step 1:
             # Replace "pass" statement with your code
 
-            level_pred_scores, predClasses = level_pred_scores.max(dim=1)
+            level_pred_scores, level_pred_classes = level_pred_scores.max(dim=1)
 
             # Step 2:
             # Replace "pass" statement with your code
 
-            retain = level_pred_scores > test_score_thresh
-            level_pred_classes = predClasses[retain]
-            level_pred_scores = level_pred_scores[retain]
+            score_mask = level_pred_scores > test_score_thresh
+            level_pred_classes = level_pred_classes[score_mask]
+            level_pred_scores = level_pred_scores[score_mask]
 
             # Step 3:
             # Replace "pass" statement with your code
 
-            level_pred_boxes = fcos_apply_deltas_to_locations(level_deltas, level_locations,stride=self.backbone.fpn_strides[level_name])
-            level_pred_boxes = level_pred_boxes[retain]
-            removeBackground = (level_deltas[retain].sum(dim=1) != -4)
-            level_pred_scores = level_pred_scores[removeBackground]
-            level_pred_classes = level_pred_classes[removeBackground]
-            level_pred_boxes = level_pred_boxes[removeBackground]
+            level_pred_boxes = fcos_apply_deltas_to_locations(level_deltas, level_locations, self.backbone.fpn_strides[level_name])
+            level_pred_boxes = level_pred_boxes[score_mask]
 
             # Step 4: Use `images` to get (height, width) for clipping.
             # Replace "pass" statement with your code
             
-            dim2,dim3 = images.shape[2], images.shape[3]
+            H,W = images.shape[2], images.shape[3]
 
             level_pred_boxes[:,0] = level_pred_boxes[:,0].clip(min=0)
             level_pred_boxes[:,1] = level_pred_boxes[:,1].clip(min=0)
-            level_pred_boxes[:,2] = level_pred_boxes[:,2].clip(max=dim2)
-            level_pred_boxes[:,3] = level_pred_boxes[:,3].clip(max=dim3)
+            level_pred_boxes[:,2] = level_pred_boxes[:,2].clip(max=W)
+            level_pred_boxes[:,3] = level_pred_boxes[:,3].clip(max=H)
 
             ##################################################################
             #                          END OF YOUR CODE                      #
