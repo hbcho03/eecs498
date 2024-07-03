@@ -127,10 +127,11 @@ def scaled_dot_product_two_loop_single(
     ###############################################################################
     # Replace "pass" statement with your code
     
-    K, M = query.shape
-    QK = torch.zeros((K, K),device=query.device)
-    for i in range(K):
-      for j in range(K):
+    Kq, M = query.shape
+    Kk, _ = key.shape
+    QK = torch.zeros((Kq, Kk),device=query.device)
+    for i in range(Kq):
+      for j in range(Kk):
         QK[i, j] = torch.dot(query[i], key[j])
     QK = QK / (M**0.5)
     QK = torch.softmax(QK, dim=1)
@@ -183,10 +184,11 @@ def scaled_dot_product_two_loop_batch(
     ###############################################################################
     # Replace "pass" statement with your code
     
-    N, K, M = query.shape
-    QK = torch.zeros((N, K, K),device=query.device)
-    for i in range(K):
-      for j in range(K):
+    N, Kq, M = query.shape
+    _, Kk, _ = key.shape
+    QK = torch.zeros((N, Kq, Kk),device=query.device)
+    for i in range(Kq):
+      for j in range(Kk):
         QK[:, i, j] = torch.bmm(query[:, i].unsqueeze(1), key[:, j].unsqueeze(2)).reshape(-1)
     QK = QK / (M**0.5)
     QK = torch.softmax(QK, dim=2)
@@ -523,11 +525,18 @@ class LayerNormalization(nn.Module):
         # the standard deviation.                                                #
         ##########################################################################
         # Replace "pass" statement with your code
-        
-        mu = x.mean(dim=-1)
-        mu = mu.unsqueeze(-1)
-        std = (((x-mu)**2).sum(dim=-1)/x.shape[-1])**0.5
-        std = std.unsqueeze(-1)
+
+        if x.dim() == 2:
+          mu = x.mean(dim=1)
+          mu = mu.unsqueeze(-1)
+          std = (((x-mu)**2).sum(dim=1)/x.shape[1])**0.5
+          std = std.unsqueeze(-1)
+        elif x.dim() == 3:
+          mu = x.mean(dim=(1,2))
+          mu = mu.unsqueeze(-1)
+          std = (((x-mu)**2).sum(dim=(1,2))/(x.shape[1]*x.shape[2]))**0.5
+          std = std.unsqueeze(-1)
+
         y = self.gamma * (x - mu) / (std + self.epsilon) + self.beta
 
         ##########################################################################
@@ -1019,7 +1028,9 @@ def position_encoding_sinusoid(K: int, M: int) -> Tensor:
     # Replace "pass" statement with your code
     
     pos = torch.arange(K, dtype=torch.float).reshape(1, -1, 1)
-    dim = torch.arange(M, dtype=torch.float).reshape(1, 1, -1)
+    dim = torch.arange(M, dtype=torch.float)
+    dim[1::2] = dim[0::2].clone()
+    dim = dim.reshape(1, 1, -1)
     phase = pos / (1e4 ** (torch.div(dim, M,rounding_mode='floor')))
 
     y = phase.clone()
