@@ -60,7 +60,7 @@ class Conv(object):
         W_out = 1 + (W + 2 * pad - WW) // stride
         x = torch.nn.functional.pad(x, (pad,pad,pad,pad))
 
-        out = torch.zeros((N,F,H_out,W_out),dtype =  x.dtype, device = x.device)
+        out = torch.zeros((N,F,H_out,W_out),dtype=x.dtype, device=x.device)
 
         for n in range(N):
           for f in range(F):
@@ -152,13 +152,11 @@ class MaxPool(object):
         N,C,H,W = x.shape
         H_out = 1 + (H - PH) // stride
         W_out = 1 + (W - PW) // stride
-        out = torch.zeros((N,C,H_out,W_out), dtype = x.dtype, device = x.device)
+        out = torch.zeros((N,C,H_out,W_out), dtype=x.dtype, device=x.device)
         for n in range(N):
           for height in range(H_out):
             for width in range(W_out):
               out[n,:,height,width], _ = x[n,:,height*stride:height*stride+PH,width*stride:width*stride+PW].reshape(C,-1).max(dim=1)
-
-
 
 
         ####################################################################
@@ -198,8 +196,8 @@ class MaxPool(object):
               local_x  = x[n,:,height*stride:height*stride+PH,width*stride:width*stride+PW]
               flat_local_x = local_x.reshape(C ,-1)
               local_dw = torch.zeros_like(flat_local_x)
-              _, indicies = flat_local_x.max(dim=1)
-              local_dw[range(C),indicies] = dout[n,:,height,width]
+              _, indices = flat_local_x.max(dim=1)
+              local_dw[range(C),indices] = dout[n,:,height,width]
               dx[n,:,height*stride:height*stride+PH,width*stride:width*stride+PW] = local_dw.reshape(local_x.shape)
 
 
@@ -335,9 +333,9 @@ class ThreeLayerConvNet(object):
         ######################################################################
         # Replace "pass" statement with your code
 
-        out_CRP, cache_CRP = Conv_ReLU_Pool.forward(X,self.params['W1'], self.params['b1'],conv_param,pool_param) 
-        out_LR, cache_LR = Linear_ReLU.forward(out_CRP,self.params['W2'], self.params['b2'])
-        out_L, cache_L = Linear.forward(out_LR,self.params['W3'], self.params['b3'])
+        out_CRP, cache_CRP = Conv_ReLU_Pool.forward(X, W1, b1, conv_param, pool_param) 
+        out_LR, cache_LR = Linear_ReLU.forward(out_CRP, W2, b2)
+        out_L, cache_L = Linear.forward(out_LR, W3, b3)
         scores = out_L
 
         ######################################################################
@@ -466,12 +464,10 @@ class DeepConvNet(object):
         conv_param = {'stride': 1, 'pad': 1}
         pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
         prev_filters,H_out,W_out = input_dims
-        HH = filter_size
-        WW = filter_size
 
         for i, num_filter in enumerate(num_filters):
-          H_out = 1 + (H_out + 2 * conv_param['pad'] - HH) // conv_param['stride']
-          W_out = 1 + (W_out + 2 * conv_param['pad'] - WW) // conv_param['stride']
+          H_out = 1 + (H_out + 2 * conv_param['pad'] - filter_size) // conv_param['stride']
+          W_out = 1 + (W_out + 2 * conv_param['pad'] - filter_size) // conv_param['stride']
           if self.batchnorm:
             self.params['gamma{}'.format(i)] = torch.ones(num_filter, dtype = dtype, device = device)
             self.params['beta{}'.format(i)] = torch.zeros(num_filter, dtype = dtype, device = device)
@@ -481,16 +477,16 @@ class DeepConvNet(object):
           if weight_scale == 'kaiming':
             self.params['W{}'.format(i)] = kaiming_initializer(num_filter, prev_filters, K=filter_size, relu=True, device=device,dtype=dtype)
           else:
-            self.params['W{}'.format(i)] = torch.normal(0.0, weight_scale, (num_filter, prev_filters, HH, WW), dtype = dtype, device = device)
-          self.params['b{}'.format(i)] = torch.zeros(num_filter, dtype=dtype,device= device)
+            self.params['W{}'.format(i)] = torch.normal(0.0, weight_scale, (num_filter, prev_filters, filter_size, filter_size), dtype = dtype, device = device)
+          self.params['b{}'.format(i)] = torch.zeros(num_filter, dtype=dtype,device=device)
           prev_filters = num_filter
 
         i+=1
         if weight_scale == 'kaiming':
             self.params['W{}'.format(i)] = kaiming_initializer(num_filter*H_out*W_out, num_classes,relu=False, device=device,dtype=dtype)
         else:
-            self.params['W{}'.format(i)] = torch.normal(0.0, weight_scale, (num_filter, prev_filters, HH, WW), dtype = dtype, device = device)
-        self.params['b{}'.format(i)] = torch.zeros(num_classes, dtype=dtype,device= device)
+            self.params['W{}'.format(i)] = torch.normal(0.0, weight_scale, (num_filter*H_out*W_out, num_classes), dtype = dtype, device = device)
+        self.params['b{}'.format(i)] = torch.zeros(num_classes, dtype=dtype,device=device)
 
 
         ################################################################
@@ -877,21 +873,17 @@ class BatchNorm(object):
             # Replace "pass" statement with your code
 
             mean = 1 / N * x.sum(dim=0)
-            running_mean = momentum * running_mean + (1 - momentum) * mean
-
             x_mean = x - mean
-
             var = 1 / N * (x_mean ** 2).sum(dim=0)
+
+            istd = 1 / (torch.sqrt(var + eps))
+            x_norm =(x - mean) * istd
+            out = gamma * x_norm + beta
+
+            cache = (gamma, x, x_mean, var, istd, eps, x_norm, mode)
+
+            running_mean = momentum * running_mean + (1 - momentum) * mean
             running_var = momentum * running_var + (1 - momentum) * var
-
-            std = (var + eps).sqrt()
-            istd = 1 / std
-
-            x_hat = x_mean * istd
-
-            out = gamma * x_hat + beta
-
-            cache = (x_hat, gamma, x_mean, istd, std, var, eps)
 
             ################################################################
             #                           END OF YOUR CODE                   #
@@ -906,8 +898,12 @@ class BatchNorm(object):
             ################################################################
             # Replace "pass" statement with your code
             
-            normalized = ((x - running_mean)/(running_var+ eps)**(1/2))
-            out = normalized * gamma + beta
+            x_mean = x - running_mean
+            istd = 1 / (torch.sqrt(running_var + eps))
+            x_norm = x_mean / istd
+            out = gamma * x_norm + beta
+
+            cache = (gamma, x, eps, running_mean, running_var, x_norm, mode)
 
             ################################################################
             #                      END OF YOUR CODE                        #
@@ -951,20 +947,35 @@ class BatchNorm(object):
         #####################################################################
         # Replace "pass" statement with your code
 
-        x_hat, gamma, x_mean, istd, std, var, eps = cache
-        m = dout.shape[0]
-
-        dbeta = dout.sum(dim=0)
-
-        dgamma = (dout * x_hat).sum(dim=0)
-
-        dx_hat = dout * gamma
-
-        dvar = (dx_hat * x_mean * (-0.5) * (var + eps) ** (-3 / 2)).sum(dim=0)
-
-        dmean = dx_hat.sum(dim=0) * (-istd) + dvar * -2 * x_mean.sum(dim=0) / m
+        mode = cache[-1]
         
-        dx = dx_hat * istd + dvar * 2 * x_mean / m +  dmean / m
+        if mode == 'train':
+
+          N, D = dout.shape
+          gamma, x, x_mean, var, istd, eps, x_norm, _ = cache
+
+          dgamma = torch.sum(x_norm * dout, dim=0)       
+          dbeta = torch.sum(dout, dim=0)
+
+          dx_norm = dout * gamma
+          
+          dvar = torch.sum(dx_norm * x_mean, dim=0) * (-0.5*(istd**-3))
+
+          dmu1 = - torch.sum(dx_norm, dim=0) * istd
+          dmu2 = dvar * -2 * torch.sum(x_mean, dim=0) / N
+          dmu = dmu1 + dmu2
+
+          dx1 = dx_norm * istd
+          dx2 = dvar * 2 * x_mean / N
+          dx3 = dmu / N
+          dx = dx1 + dx2 + dx3
+
+
+        else:
+          gamma, x, eps, running_mean, running_var, x_norm, _ = cache
+          dbeta = torch.sum(dout, axis=0)
+          dgamma = torch.sum(x_norm * dout, dim=0)
+          dx = dout * gamma / ((running_var + eps) ** 0.5)
 
         #################################################################
         #                      END OF YOUR CODE                         #
@@ -999,13 +1010,22 @@ class BatchNorm(object):
         ###################################################################
         # Replace "pass" statement with your code
 
-        x_hat, gamma, x_mean, istd, std, var, eps = cache
-        m = dout.shape[0]
-        # y = gamma * x_hat + beta
-        dbeta = dout.sum(dim=0)
-        dgamma = (x_hat * dout).sum(dim=0)
-        dx = gamma * istd * (m * dout - dgamma * x_hat - dbeta) / m
+        mode = cache[-1]
 
+        if mode == 'train':
+          N, D = dout.shape
+          gamma, x, x_mean, var, istd, eps, x_norm, _ = cache
+
+          dgamma = torch.sum(x_norm * dout, dim=0)
+          dbeta = torch.sum(dout, dim=0)
+
+          dx = gamma * istd / N * (N * dout - x_mean * dgamma - dbeta)
+
+        else:
+          gamma, x, eps, running_mean, running_var, x_std, _ = cache
+          dbeta = torch.sum(dout, axis=0)
+          dgamma = torch.sum(x_std * dout, dim=0)
+          dx = dout * gamma / ((running_var + eps) ** 0.5)
 
         #################################################################
         #                        END OF YOUR CODE                       #
@@ -1056,8 +1076,8 @@ class SpatialBatchNorm(object):
         # Replace "pass" statement with your code
 
         N,C,H,W = x.shape
-        m = x.permute(1,0,2,3).reshape(C, -1).T
-        out, cache = BatchNorm.forward(m, gamma, beta, bn_param)
+        x_flat = x.permute(1,0,2,3).reshape(C, -1).T
+        out, cache = BatchNorm.forward(x_flat, gamma, beta, bn_param)
         out = out.T.reshape(C, N, H, W).permute(1,0,2,3)
 
         ################################################################
@@ -1092,8 +1112,8 @@ class SpatialBatchNorm(object):
         # Replace "pass" statement with your code
 
         N, C, H, W = dout.shape
-        m = dout.permute(1,0,2,3).reshape(C,-1).T
-        dx, dgamma, dbeta = BatchNorm.backward_alt(m, cache)
+        x_flat = dout.permute(1,0,2,3).reshape(C,-1).T
+        dx, dgamma, dbeta = BatchNorm.backward_alt(x_flat, cache)
         dx = dx.T.reshape(C, N, H, W).permute(1, 0, 2, 3)
         
         ##################################################################

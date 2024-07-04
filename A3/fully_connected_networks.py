@@ -727,7 +727,7 @@ class Dropout(object):
             ##############################################################
             # Replace "pass" statement with your code
 
-            mask = (torch.rand(x.shape) > p) / p
+            mask = (torch.rand(x.shape) < (1-p)) / (1-p)
             mask = mask.to(x.device)
             out = x * mask
 
