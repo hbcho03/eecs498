@@ -139,7 +139,7 @@ class RPNPredictionNetwork(nn.Module):
           object_logits[level] = object_logits[level].reshape(B, -1)
 
           boxreg_deltas[level] = self.pred_box(self.stem_rpn(feature))
-          boxreg_deltas[level] = boxreg_deltas[level].reshape(B, 4, -1).permute(0,2,1)
+          boxreg_deltas[level] = boxreg_deltas[level].reshape(B,A,4,-1).permute(0,3,1,2).reshape(B,-1,4)
 
 
         ######################################################################
