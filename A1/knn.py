@@ -225,10 +225,10 @@ def predict_labels(dists: torch.Tensor, y_train: torch.Tensor, k: int = 1):
     # import collections 
     # collections.Counter(list)
 
-    for i in range(num_test):
-      values, indices = dists[:,i].topk(k=k, largest = False)
+    for j in range(num_test):
+      values, indices = dists[:,j].topk(k=k, largest=False)
       classes, counts = y_train[indices].unique(return_counts=True)
-      y_pred[i] = classes[counts.argmax()]
+      y_pred[j] = classes[counts.argmax()]
 
     ##########################################################################
     #                           END OF YOUR CODE                             #

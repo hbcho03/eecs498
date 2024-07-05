@@ -435,8 +435,10 @@ def reshape_practice(x: Tensor) -> Tensor:
     ##########################################################################
     # Replace "pass" statement with your code
 
-    y = x.view(2,3,4).transpose(1,2).reshape(8,3).T
-    
+    # y = x.view(2,3,4).transpose(1,2).reshape(8,3).T
+
+    y = x.view(2,3,4).permute(1,0,2).reshape(3,8)
+
     ##########################################################################
     #                            END OF YOUR CODE                            #
     ##########################################################################
