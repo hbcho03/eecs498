@@ -422,8 +422,8 @@ def svm_get_search_params():
     ###########################################################################
     # Replace "pass" statement with your code
     
-    learning_rates = [0.0001, 0.001, 0.01]
-    regularization_strengths = [1.0, 3.0, 10.0]
+    learning_rates = [1e-3, 2e-3, 3e-3]
+    regularization_strengths = [0.3, 0.4, 0.6]
 
     ###########################################################################
     #                           END OF YOUR CODE                              #
@@ -536,23 +536,29 @@ def softmax_loss_naive(
     
     num_classes = W.shape[1]
     num_train = X.shape[0]
+      
+    scores = W.t().mv(X[0])
+    correct_class_score = scores[y[0]]
+
 
     for i in range(num_train):
       scores = W.t().mv(X[i])
-      scores -= scores.max()
-      correct_class_score = scores[y[i]]
-      loss += -correct_class_score  + torch.log(torch.exp(scores).sum())
-    for j in range(num_classes):
-      if j == y[i]:
-        dW[:, j] += (torch.exp(scores[j]) / torch.exp(scores).sum() - 1) * X[i, :]
-      else:
-        dW[:, j] += torch.exp(scores[j]) / torch.exp(scores).sum() * X[i, :]
-
+      scores = scores - scores.max()
+      scores = scores.exp()
+      probs = scores/scores.sum()
+      label_prob = probs[y[i]]
+      loss += -label_prob.log()
+      for j in range(num_classes):
+        if j == y[i]:
+          dW[:, j] += probs[j] * X[i, :] - X[i, :]
+        else:
+          dW[:, j] += probs[j] * X[i, :]
+    
     loss /= num_train
     loss += reg * torch.sum(W * W)
 
-    dw /= num_train
-    dw += 2 * reg * W
+    dW /= num_train
+    dW += 2 * reg * W
 
     #############################################################################
     #                          END OF YOUR CODE                                 #
@@ -600,10 +606,10 @@ def softmax_loss_vectorized(
     d_scores = probs.clone()
     d_scores[range(num_train), y] -= 1
     
-    dW = X.T.matmul(d_scores)
+    dW = X.T.mm(d_scores)
 
-    dw /= num_train
-    dw += 2 * reg * W
+    dW /= num_train
+    dW += 2 * reg * W
  
     #############################################################################
     #                          END OF YOUR CODE                                 #
@@ -634,8 +640,8 @@ def softmax_get_search_params():
     ###########################################################################
     # Replace "pass" statement with your code
 
-    learning_rates = [0.0001, 0.001, 0.01]
-    regularization_strengths = [1.0, 3.0, 10.0]
+    learning_rates = [5e-3, 1e-2, 2e-2]
+    regularization_strengths = [0.01, 0.05, 0.08]
 
     ###########################################################################
     #                           END OF YOUR CODE                              #
